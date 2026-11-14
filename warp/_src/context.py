@@ -4767,6 +4767,11 @@ class Module:
         else:
             arch_label = f"sm{final_arch}{arch_suffix}"
 
+        # A HIP arch suffix can carry target features ("gfx950:sramecc+:xnack-", as CDNA devices report).
+        # A colon is not usable in a file name everywhere, and the API-capture format rejects it in the
+        # binary and source file names it records, so the file name spells it "_".
+        arch_label = arch_label.replace(":", "_")
+
         if use_ptx:
             output_name = f"{module_name_short}.{arch_label}.ptx"
         else:
@@ -4786,7 +4791,7 @@ class Module:
         module_name = self.get_module_identifier(block_dim=options["block_dim"])
         output_name = os.path.basename(binary_path)
         # CUDA binaries carry an optional a/f suffix; HIP binaries carry the gfx name, which may include
-        # target features ("gfx90a:sramecc+:xnack-") and has no variants
+        # target features (spelled "gfx90a_sramecc+_xnack-" in the file name) and has no variants
         variant = re.fullmatch(rf"{re.escape(module_name)}\.sm{output_arch}(a|f|gfx[^.]+)?\.(ptx|cubin)", output_name)
         source_path = os.path.join(os.path.dirname(binary_path), module_name + ".cu")
         try:
