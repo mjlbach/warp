@@ -61,6 +61,21 @@ def tile_matmul_alpha_beta_kernel(
     wp.tile_store(C, c)
 
 
+# module="unique" because hip_tile_rocwmma is a module-level option
+@wp.kernel(module_options={"hip_tile_rocwmma": False}, module="unique")
+def tile_matmul_16x16_scalar_kernel(
+    A: wp.array2d[float],
+    B: wp.array2d[float],
+    C: wp.array2d[float],
+):
+    """Compute C = A @ B as tile_matmul_16x16_kernel does, built without the rocWMMA path."""
+    a = wp.tile_load(A, shape=(16, 16), storage="shared")
+    b = wp.tile_load(B, shape=(16, 16), storage="shared")
+    c = wp.tile_zeros(dtype=float, shape=(16, 16), storage="shared")
+    wp.tile_matmul(a, b, c)
+    wp.tile_store(C, c)
+
+
 def _matmul(device, M, N, K, alpha=1.0, beta=0.0):
     """Run tile_matmul and return (result_np, numpy_reference)."""
     rng = np.random.default_rng(42)
@@ -174,6 +189,27 @@ def test_tile_matmul_alpha0_beta1(test, device):
     np.testing.assert_allclose(C_wp.numpy(), expected, atol=1e-5, err_msg="alpha=0,beta=1: result should be C_in")
 
 
+def test_tile_matmul_rocwmma_opt_out(test, device):
+    """hip_tile_rocwmma=False selects the scalar GEMM and gives the same product."""
+    rng = np.random.default_rng(7)
+    A_np = rng.standard_normal((16, 16)).astype(np.float32)
+    B_np = rng.standard_normal((16, 16)).astype(np.float32)
+    A_wp = wp.array(A_np, dtype=float, device=device)
+    B_wp = wp.array(B_np, dtype=float, device=device)
+
+    results = []
+    for kernel in (tile_matmul_16x16_kernel, tile_matmul_16x16_scalar_kernel):
+        C_wp = wp.zeros((16, 16), dtype=float, device=device)
+        wp.launch_tiled(kernel, dim=(1,), inputs=[A_wp, B_wp, C_wp], block_dim=64, device=device)
+        results.append(C_wp.numpy())
+
+    np.testing.assert_allclose(results[1], A_np @ B_np, atol=1e-4, rtol=1e-4)
+    np.testing.assert_allclose(results[0], results[1], atol=1e-5, rtol=1e-5)
+
+    test.assertFalse(tile_matmul_16x16_scalar_kernel.module.options["hip_tile_rocwmma"])
+    test.assertTrue(tile_matmul_16x16_kernel.module.options["hip_tile_rocwmma"])
+
+
 devices = get_cuda_test_devices()
 
 
@@ -191,6 +227,7 @@ for _test in (
     test_tile_matmul_accumulate_false_ignores_beta,
     test_tile_matmul_alpha2_beta1,
     test_tile_matmul_alpha0_beta1,
+    test_tile_matmul_rocwmma_opt_out,
 ):
     add_function_test(TestTileRocWMMA, _test.__name__, _test, devices=devices)
 

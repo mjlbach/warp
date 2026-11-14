@@ -3906,6 +3906,11 @@ class ModuleBuilder:
         if self.options.get("hip_fast_fp_atomics"):
             type_defines += "#define WP_HIP_FAST_FP_ATOMICS 1\n"
 
+        # Keep tile_matmul on the scalar GEMM where it would use rocWMMA (see tile.h).
+        # Inert wherever the rocWMMA path is not compiled in.
+        if not self.options.get("hip_tile_rocwmma", True):
+            type_defines += "#define WP_TILE_DISABLE_ROCWMMA 1\n"
+
         # add headers
         #
         # The extra preamble goes *after* Warp's module header so external headers can use
@@ -4266,6 +4271,7 @@ class Module:
             "fast_math": False,
             "fuse_fp": True,
             "hip_fast_fp_atomics": warp.config.hip_fast_fp_atomics,
+            "hip_tile_rocwmma": True,
             "lineinfo": warp.config.lineinfo,
             "cuda_output": None,  # supported values: "ptx", "cubin", or None (automatic)
             "mode": None,
