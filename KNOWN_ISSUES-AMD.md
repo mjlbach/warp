@@ -86,6 +86,22 @@ safe on managed memory Warp did not allocate that way, such as
 `CudaManagedAllocator` arrays.
 Integer atomics are unaffected.
 
+### Multiply-add contraction differs between kernels
+
+With `fuse_fp` enabled (the default) HIP kernels are compiled with
+`-ffp-contract=fast`, which lets the AMDGPU backend decide per kernel which
+multiplies fuse into a following add or subtract. Two kernels that perform
+the same arithmetic in the same order can therefore differ by a few ULP.
+Seen on gfx950 in `test_fsai`: in the FSAI refit kernel, whose loops have
+constant bounds, the compiler emits packed fp32 multiplies (`v_pk_mul_f32`)
+and leaves many subtractions unfused (138 `v_sub_f32` against 1 in the
+construction kernel, which fuses the same expressions into `v_fma_f32`). The
+two factors differ in 1 of 324 and 2 of 729 entries by at most 3.1 fp32 eps;
+fp64 and fp16 are bitwise equal there. Results are deterministic, and equal
+bit for bit with `fuse_fp=False`, at `-O1`, in debug mode and on the CPU
+device. Code that needs two kernels to agree bitwise must set the
+`"fuse_fp"` module option to `False`.
+
 ### 64 KB shared memory (LDS)
 
 gfx1151 LDS is a hard 64 KB; CUDA devices from sm_75 can opt into more. Tile
