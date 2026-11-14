@@ -219,6 +219,27 @@ partly `test_heightfield` and `test_remesh`); the failing call is an ordinary
 `wp.array` in `builder.finalize()`. ROCm 7.2.x does not show it. Mechanism not
 established. Workaround: ROCm 7.2.x for affected workloads.
 
+### gfx1036 (Raphael iGPU): unsynchronized work is dropped, hipCUB radix sort is wrong
+
+Seen on the Ryzen 7000 desktop iGPU (gfx1036, RDNA 2) with ROCm from the
+TheRock 10.1.0 wheels (HIP 7.16). Both reproduce without Warp.
+
+- **Asynchronous work is silently dropped.** A copy, memset or kernel launch
+  that is not followed by a synchronization, issued after the device has been
+  idle for about 1 ms, never executes and reports no error; later reads see
+  the old contents. Reproducible with plain HIP calls. Workaround: set
+  `AMD_SERIALIZE_COPY=3 AMD_SERIALIZE_KERNEL=3` in the environment, which
+  makes the runtime wait before and after each copy and kernel.
+- **hipCUB radix sort returns wrong results.**
+  `hipcub::DeviceRadixSort::SortPairs` returns output that is not sorted; a
+  standalone hipCUB program shows it. No workaround. Everything built on
+  `wp.utils.radix_sort_pairs` and `wp.utils.segmented_sort_pairs` is
+  unreliable there, including LBVH construction, hash grids and sparse-matrix
+  assembly, and so are the tests that cover them.
+
+Platform limitation (ROCm runtime on gfx1036). Neither is reported on
+gfx1151, and the same hipCUB sorts are correct on gfx950.
+
 ### Scratch allocation limit
 
 A kernel whose scratch need exceeds ROCm's `HSA_SCRATCH_SINGLE_LIMIT` gets a new
@@ -257,6 +278,16 @@ means always) are compiled out of process with `hipcc --genco`, retrying
 without `-DNDEBUG` if the compiler crashes. A small module containing such a
 kernel still compiles through HIPRTC; set `WARP_HIP_HIPRTC_MAX_SRC_BYTES=0`.
 Platform limitation (ROCm compiler).
+
+### Textures on Instinct (CDNA) devices
+
+CDNA devices (gfx942, gfx950) report no image support
+(`hipDeviceAttributeImageSupport` is 0) and every array or texture-object
+creation returns "operation not supported" (error 801).
+`Device.is_texture_supported` is `False` there, creating a `wp.Texture1D`,
+`wp.Texture2D` or `wp.Texture3D` raises a `RuntimeError` naming the device,
+and `cuda/test_texture` and `cuda/test_texture_compiler` skip. Platform
+limitation.
 
 ### Mipmapped arrays
 
@@ -340,6 +371,8 @@ Skipped on HIP:
 - `tile/test_tile_fft`, `test_tile_solve`, `test_tile_mlp` MathDx cases —
   libmathdx is CUDA-only.
 - `cuda/test_texture` mipmapped-array tests — error 801.
+- `cuda/test_texture`, `cuda/test_texture_compiler` on devices without image
+  support (CDNA) — no textures (section 3).
 - `test_large` `test_large_launch_large_kernel` — grid-size limit.
 - `test_atomic_cas` spinlock tests — lockstep wavefronts.
 - `test_cuda_profiler` start/stop — `hipProfilerStart` unsupported.

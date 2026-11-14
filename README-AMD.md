@@ -68,6 +68,9 @@ This port is **validated only on `gfx1151`** (AMD Radeon 8060S / Strix Halo iGPU
 | `gfx1100`, `gfx1101`, `gfx1102` | Buildable | RDNA 3 dGPU; untested |
 | `gfx1030` | Buildable | RDNA 2; untested |
 
+| `gfx942`, `gfx950` | Buildable | Instinct (CDNA 3, wave64); see [Instinct targets](#instinct-targets) |
+| `gfx1036` | Buildable | Raphael iGPU; runtime defects in `KNOWN_ISSUES-AMD.md` |
+
 If you run on something other than gfx1151 — pass or fail — please open an issue.
 
 Confirm your GPU:
@@ -77,6 +80,39 @@ rocminfo | grep -E 'Name:|gfx'
 # or, if rocminfo is not on PATH:
 find /opt/rocm -name rocminfo -executable 2>/dev/null
 ```
+
+### Instinct targets
+
+The Instinct parts (`gfx942`: MI300A/MI300X/MI325X, `gfx950`: MI350X/MI355X)
+build with the same script, one or several architectures per library:
+
+```bash
+HIP_ARCH=gfx942,gfx950 ./build_amd.sh
+```
+
+`docker/rocm/Dockerfile` has one image per target (`--target warp_gfx942` on
+ROCm 7.2, `--target warp_gfx950` on ROCm 10.1.0). What differs from gfx1151:
+
+- **Wavefront width.** CDNA runs 64-lane wavefronts; the tile lane masks follow
+  the target family (`WP_TILE_WARP_SIZE` is 64 on gfx9).
+- **`wp.tile_matmul` uses rocWMMA** where it applies: a 16x16 `float` result,
+  `float` operands, and `block_dim=64` (one wavefront per block) run on the
+  fp32 16x16x4 MFMA instruction. Other shapes, other block sizes and all RDNA
+  targets use the scalar GEMM. The path needs the rocWMMA headers
+  (`<rocm>/include/rocwmma`); without them it is compiled out.
+- **No textures.** CDNA devices have no image support, so `wp.Texture1D/2D/3D`
+  cannot be created there. `Device.is_texture_supported` is `False`, creation
+  raises a `RuntimeError` saying so, and the texture tests skip.
+- **Architecture names carry target features** (`gfx950:sramecc+:xnack-`).
+  Kernel-cache file names spell the colons as `_`.
+
+ROCm installed from the TheRock pip wheels (`rocm[devel]`, which puts the SDK
+in `site-packages/_rocm_sdk_devel` and leaves `ROCM_PATH` unset) is found
+without configuration: kernel compiles look for the ROCm headers under
+`ROCM_PATH`/`ROCM_HOME`/`HIP_PATH`, `/opt/rocm`, those wheel packages, and next
+to a `hipcc` on `PATH`, in that order.
+
+None of this is validated by the port maintainers on Instinct hardware.
 
 ## Choosing a ROCm version
 
