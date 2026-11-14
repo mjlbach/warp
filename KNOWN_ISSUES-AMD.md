@@ -325,6 +325,52 @@ is broken from boot. Check with
 rising count identifies that state; reboot. `HSA_ENABLE_INTERRUPT=0` masks it.
 Affects `test_optim` `example_fluid_checkpoint` intermittently.
 
+The same spin also occurs sporadically without that driver state. On an
+MI355X SR-IOV virtual function (gfx950, ROCm 7.15, amdgpu-dkms 7.1.3, fence
+count zero) `test_grad` `test_mesh_grad_cuda_0` hangs in about 1 % of fresh
+processes: 6 of 318 runs of the test, 12 of 1320 runs of its body, none in
+1080 runs with `HSA_ENABLE_INTERRUPT=0`. The whole module otherwise takes
+28 s with a cold kernel cache and 1.2 s warm. The main thread spins in
+`sched_yield` inside `hipFree`, called from the scan in
+`wp_mesh_create_device` to release its temporary buffer while the scan
+kernels are still queued; the GPU is idle and the kernel log is silent.
+In one trial, calling `hipStreamSynchronize` or `hipDeviceSynchronize`
+immediately before the `hipFree` gave no hang in about 2800 runs, against 3
+in about 900 unmodified runs over the same minutes; the trial was cut short
+and the change is not adopted. The four hangs whose onset was timed fell
+within 21 s of the extrapolated 150 s schedule on which the node's
+`amd-metrics-exporter` runs `rocpctl`, which toggles the performance counters
+of every compute queue; that link is not established. Reproduce with:
+
+```sh
+for i in $(seq 300); do
+  WARP_CACHE_PATH=$(mktemp -d) timeout -s KILL 60 \
+    python -m unittest warp.tests.test_grad -k test_mesh_grad_cuda \
+    >/dev/null 2>&1 || echo "run $i hung or failed"
+done
+```
+
+Run only a few such loops at a time on a node that runs the exporter; see
+"KFD deadlock with the metrics exporter's profiler" below. Platform
+limitation; workaround `HSA_ENABLE_INTERRUPT=0`.
+
+### KFD deadlock with the metrics exporter's profiler
+
+amdgpu-dkms 7.1.3 takes two KFD locks in opposite orders. Tearing down a
+process that enabled performance counters holds `profiler_lock` and takes the
+queue-manager lock (`kfd_process_destroy_pdds` → `set_perfcount`); creating a
+compute queue holds the queue-manager lock and takes `profiler_lock`
+(`create_queue_cpsch` → `init_mqd`). When a `rocpctl` run of
+`amd-metrics-exporter` exits while another process creates a queue, both
+block for good, and with them every later open of `/dev/kfd`, queue ioctl and
+GPU process exit on the node. Hit once on the MI355X node with 24 concurrent
+loops of short HIP processes. Signs: load average climbing with idle CPUs,
+unkillable processes in state `D`, and `task ... blocked for more than 122
+seconds` in the kernel log with `set_perfcount` and `init_mqd` in the traces.
+Only a reboot clears it. Avoid heavy churn of HIP processes on a node whose
+exporter profiles the GPUs, or disable the exporter's profiler metrics.
+Platform limitation (driver).
+
 ### Interop packages
 
 - torch and jax for gfx1151 come from the TheRock nightly index
@@ -371,6 +417,8 @@ Expected to fail:
 - `geometry/test_bvh` `test_bvh_aabb` — intermittent; lost writes (section 2).
 - `test_optim` `example_fluid_checkpoint` — intermittent wedge in
   `capture_launch` (section 3).
+- `test_grad` `test_mesh_grad` on the GPU — intermittent hang in `hipFree`
+  on an MI355X virtual function (lost GPU completion signal, section 3).
 
 Skipped on HIP:
 
